@@ -1,0 +1,89 @@
+name: iOS unsigned IPA (no Mac needed)
+
+# Build un .ipa NON SIGNÉ avec le runner macOS gratuit de GitHub.
+# À lancer depuis l'onglet Actions une fois le patch appliqué et commité.
+# L'ipa unsigned s'installe via AltStore / SideStore / Scarlet / TrollStore
+# (qui re-signent sur l'appareil), pas via l'App Store.
+
+on:
+  # Déclenché uniquement à la main (bouton Run workflow) : quand on upload
+  # les fichiers un par un via le web, chaque commit intermédiaire lancerait
+  # sinon un build voué à l'échec qui mange le quota macOS gratuit.
+  workflow_dispatch:
+
+jobs:
+  build-unsigned:
+    runs-on: macos-14
+    # Le premier build (Flutter + Pods + Cast SDK) prend 30-50 min.
+    # Les suivants réutilisent le cache et vont bien plus vite.
+    timeout-minutes: 240
+    env:
+      COCOAPODS_DISABLE_STATS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Java 17 (Gradle / build_runner)
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Versions
+        run: |
+          flutter --version
+          dart --version
+          pod --version
+          xcodebuild -version
+
+      - name: Deps Dart
+        run: |
+          flutter pub get
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Recâble les Swift dans le .pbxproj (sans Mac)
+        run: python3 ios-port-tools/add_swift_to_pbxproj.py ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ~/.cocoapods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile', 'ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Pods iOS (dont google-cast-sdk)
+        # SANS --repo-update : mettre à jour tout le catalogue Specs prend
+        # à lui seul plus d'une heure et faisait exploser le timeout.
+        # Le CDN trunk suffit pour résoudre les pods.
+        run: |
+          cd ios
+          pod install
+          cd ..
+
+      - name: Build iOS sans signature
+        run: flutter build ios --release --no-codesign
+
+      - name: Emballe en .ipa unsigned
+        run: |
+          cd build/ios/iphoneos
+          rm -rf Payload OpenIPTV-unsigned.ipa
+          mkdir Payload
+          cp -r Runner.app Payload/
+          zip -r OpenIPTV-unsigned.ipa Payload
+          ls -lh OpenIPTV-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenIPTV-unsigned-ipa
+          path: build/ios/iphoneos/OpenIPTV-unsigned.ipa
+          if-no-files-found: error
