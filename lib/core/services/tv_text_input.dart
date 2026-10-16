@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -47,24 +49,40 @@ class TvTextInput {
       _listening = true;
       _channel.setMethodCallHandler(_handle);
     }
+    // iOS : le clavier Flutter standard fonctionne (pas de bug Gboard TV).
+    // On laisse le TextField natif Flutter gérer la saisie.
+    if (Platform.isIOS) return;
     final previous = _session;
     _setSession(_Session(controller, onChanged, onAction, onClosed));
     previous?.onClosed?.call(TvTextInputClose.blur);
-    await _channel.invokeMethod('open', {
+    try {
+      await _channel.invokeMethod('open', {
       'text': controller.text,
       'type': _type(keyboardType),
       'obscure': obscureText,
       'suggestions': enableSuggestions && !obscureText,
       'action': _action(textInputAction),
-      'maxLength': maxLength,
-    });
+        'maxLength': maxLength,
+      });
+    } on MissingPluginException {
+      // Pas de côté natif (tests, iOS sans le fichier Swift) : repli
+      // sur le clavier Flutter standard.
+      _setSession(null);
+    } on PlatformException {
+      _setSession(null);
+    }
   }
 
   /// Closes the keyboard without reporting it to the field (it asked).
   static Future<void> close() async {
     if (_session == null) return;
     _setSession(null);
-    await _channel.invokeMethod('close');
+    if (Platform.isIOS) return;
+    try {
+      await _channel.invokeMethod('close');
+    } on MissingPluginException {
+    } on PlatformException {
+    }
   }
 
   static Future<void> _handle(MethodCall call) async {
